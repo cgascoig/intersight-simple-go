@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-fed/httpsig"
@@ -25,19 +26,45 @@ type Client struct {
 	httpClient *http.Client
 }
 
-func NewClient(config Config) (*Client, error) {
+func NewClient(configs ...Config) (*Client, error) {
 	client := &Client{
 		httpClient: &http.Client{
 			// TODO: make logging an option
 			// Transport: &loggingRoundTripper{},
 		},
 	}
+	var config Config
+
+	if len(configs) == 1 {
+		config = configs[0]
+	}
+
+	if len(configs) > 1 {
+		return nil, fmt.Errorf("only 1 config parameter is supported")
+	}
+
+	//Apply defaults
 
 	if config.Host == "" {
-		client.host = "intersight.com"
-	} else {
-		client.host = config.Host
+		config.Host = "intersight.com"
 	}
+
+	if config.KeyID == "" {
+		envKeyId := os.Getenv("IS_KEYID")
+		if envKeyId != "" {
+			config.KeyID = envKeyId
+		}
+	}
+
+	if config.KeyFile == "" {
+		envKeyFile := os.Getenv("IS_KEYFILE")
+		if envKeyFile != "" {
+			config.KeyFile = envKeyFile
+		}
+	}
+
+	//Create client from config
+	client.host = config.Host
 
 	if config.KeyID == "" {
 		return nil, fmt.Errorf("KeyID must be set")
