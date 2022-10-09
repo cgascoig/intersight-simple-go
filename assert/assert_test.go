@@ -3,6 +3,7 @@ package assert
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"runtime"
 	"strings"
 	"testing"
@@ -147,6 +148,13 @@ func TestMatch(t *testing.T) {
 			ret:       false,
 			wantError: 1,
 		},
+		{
+			name:      "nil value",
+			expected:  map[string]interface{}{"IqnPool": interface{}(nil)},
+			got:       map[string]interface{}{"IqnPool": interface{}(nil), "ModTime": "2022-10-08T23:26:31.515Z"},
+			ret:       true,
+			wantError: 0,
+		},
 	}
 
 	for _, test := range tests {
@@ -154,6 +162,9 @@ func TestMatch(t *testing.T) {
 			mockT := &bufferT{}
 			assert.Equal(t, test.ret, match(mockT, test.expected, test.got))
 			assert.Equal(t, test.wantError, mockT.count)
+			if mockT.count != test.wantError {
+				log.Printf("Unexpected error count. Got errors: %s\n", mockT.buf.String())
+			}
 		})
 	}
 }

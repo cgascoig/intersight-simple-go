@@ -21,6 +21,10 @@ type TestingT interface {
 // Only types relevant for JSON decoded objects are supported
 func match(t TestingT, expected, got interface{}) bool {
 
+	if expected == nil && got == nil {
+		return true
+	}
+
 	switch e := expected.(type) {
 	case string:
 		if g, ok := got.(string); ok {
@@ -86,7 +90,7 @@ func match(t TestingT, expected, got interface{}) bool {
 		t.Errorf("mismatched types")
 		return false
 	}
-	t.Errorf("unsupported type")
+	t.Errorf("unsupported type: %T", expected)
 	return false
 }
 
