@@ -21,11 +21,12 @@ type Logger interface {
 }
 
 type Config struct {
-	KeyID   string
-	KeyFile string
-	KeyData string
-	Host    string
-	Logger  Logger
+	KeyID         string
+	KeyFile       string
+	KeyData       string
+	Host          string
+	Logger        Logger
+	BaseTransport http.RoundTripper
 }
 
 type Client struct {
@@ -95,6 +96,9 @@ func NewClient(configs ...Config) (*Client, error) {
 	}
 
 	var baseTransport = http.DefaultTransport
+	if config.BaseTransport != nil {
+		baseTransport = config.BaseTransport
+	}
 
 	var transport http.RoundTripper
 	decodedKeyData, _ := pem.Decode(client.keyData)
