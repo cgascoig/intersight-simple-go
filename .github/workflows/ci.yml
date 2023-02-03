@@ -1,0 +1,51 @@
+name: CI Tests
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "README.md"
+      - ".gitignore"
+  pull_request_target:
+    branches:
+      - main
+    paths-ignore:
+      - "README.md"
+      - ".gitignore"
+jobs:
+  test:
+    strategy:
+      fail-fast: true
+      max-parallel: 4
+      matrix:
+        os: ["ubuntu-latest"]
+        go-version: ["1.18", "1.19", "1.20"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      #----------------------------------------------
+      #       check-out repo and set-up Go
+      #----------------------------------------------
+      - uses: actions/checkout@v3
+      - name: Setup Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v3
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+
+      #----------------------------------------------
+      #    run test suite
+      #----------------------------------------------
+      - name: Run unit tests
+        run: |
+          go build -v ./...
+          go test -v ./...
+      - name: Run tests with v2 keys
+        env:
+          IS_KEY_ID: ${{ secrets.IS_KEY_ID_V2 }}
+          IS_KEY: ${{ secrets.IS_KEY_V2 }}
+        run: go run example/main.go
+      - name: Run tests with v3 keys
+        env:
+          IS_KEY_ID: ${{ secrets.IS_KEY_ID_V3 }}
+          IS_KEY: ${{ secrets.IS_KEY_V3 }}
+        run: go run example/main.go

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/cgascoig/intersight-simple-go/intersight"
 	"github.com/gruntwork-io/terratest/modules/random"
@@ -13,7 +14,10 @@ func main() {
 	policyName := fmt.Sprintf("cg-go-ci-test-%s", random.UniqueId())
 	log.Printf("Using policy name %s", policyName)
 
-	c, err := intersight.NewClient()
+	c, err := intersight.NewClient(intersight.Config{
+		KeyID:   os.Getenv("IS_KEY_ID"), // we set these explicitly as we will use the key data in env var for CI tests
+		KeyData: os.Getenv("IS_KEY"),
+	})
 	if err != nil {
 		log.Fatalf("Error: %v", err)
 	}
