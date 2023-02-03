@@ -3,35 +3,56 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
 
-	"github.com/cgascoig/intersight-simple-go/client"
+	"github.com/cgascoig/intersight-simple-go/intersight"
+	"github.com/gruntwork-io/terratest/modules/random"
 	"github.com/icza/dyno"
 )
 
 func main() {
-	c, err := client.NewClient(client.Config{
-		KeyID:   os.Getenv("IS_KEYID"),
-		KeyFile: os.Getenv("IS_KEYFILE"),
-	})
+	policyName := fmt.Sprintf("cg-go-ci-test-%s", random.UniqueId())
+	log.Printf("Using policy name %s", policyName)
+
+	c, err := intersight.NewClient()
 	if err != nil {
 		log.Fatalf("Error: %v", err)
 	}
 
-	res, err := c.Get("/api/v1/ntp/Policies?$count=true")
+	// Create NTP Policy
+	log.Print("Creating NTP policy ...")
+	body := fmt.Sprintf(`{"Name": "%s", "Enabled": true, "Organization": {"ClassId":"mo.MoRef", "ObjectType": "organization.Organization", "Selector": "Name eq 'default'"}, "NtpServers": ["1.1.1.1"]}`, policyName)
+	res, err := c.Post("/api/v1/ntp/Policies", []byte(body))
 	if err != nil {
 		log.Fatalf("Error: %v", err)
 	}
 
-	fmt.Printf("%v\n", res)
+	moid, err := dyno.GetString(res, "Moid")
+	if err != nil {
+		log.Fatalf("Result did not contain Moid")
+	}
+	log.Printf("NTP policy created successfully, Moid=%s", moid)
 
-	count, err := dyno.GetInteger(res, "Count")
+	// Get NTP Policy
+	log.Print("Getting NTP policy by moid ...")
+	res, err = c.Get(fmt.Sprintf("/api/v1/ntp/Policies/%s", moid))
 	if err != nil {
 		log.Fatalf("Error: %v", err)
 	}
-	typ, err := dyno.GetString(res, "ObjectType")
+
+	name, err := dyno.GetString(res, "Name")
+	if err != nil {
+		log.Fatalf("Result did not contain Name")
+	}
+	if name != policyName {
+		log.Fatalf("Created policy name doesn't match")
+	}
+	log.Printf("NTP policy retrieved successfully")
+
+	// Delete NTP Policy
+	log.Printf("Deleting NTP policy ...")
+	_, err = c.Delete(fmt.Sprintf("/api/v1/ntp/Policies/%s", moid))
 	if err != nil {
 		log.Fatalf("Error: %v", err)
 	}
-	fmt.Printf("Count: %d; Type: %s\n", count, typ)
+	log.Printf("NTP policy deleted successfully")
 }

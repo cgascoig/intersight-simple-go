@@ -7,7 +7,7 @@ import (
 
 	"text/template"
 
-	"github.com/cgascoig/intersight-simple-go/client"
+	"github.com/cgascoig/intersight-simple-go/intersight"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -94,7 +94,7 @@ func match(t TestingT, expected, got interface{}) bool {
 	return false
 }
 
-func AssertMOComply(t *testing.T, apiQuery string, expectedJSONTemplate string, templateVars interface{}, config ...client.Config) {
+func AssertMOComply(t *testing.T, apiQuery string, expectedJSONTemplate string, templateVars interface{}, config ...intersight.Config) {
 	tmpl, err := template.New("expectedJSON").Parse(expectedJSONTemplate)
 	if err != nil {
 		t.Errorf("Unable to parse expected JSON template: %v", err)
@@ -114,7 +114,7 @@ func AssertMOComply(t *testing.T, apiQuery string, expectedJSONTemplate string, 
 		return
 	}
 
-	c, err := client.NewClient(config...)
+	c, err := intersight.NewClient(config...)
 	assert.NoError(t, err, "error setting up Intersight client")
 	assert.NotNil(t, c, "error setting up Intersight client")
 
