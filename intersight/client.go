@@ -16,19 +16,33 @@ import (
 	"github.com/go-fed/httpsig"
 )
 
-type Logger interface {
-	Printf(format string, v ...any)
-}
-
+// Config holds configuration options for creating a new Client.
+// Each field that is empty will be replaced with a default value when calling NewClient
 type Config struct {
-	KeyID         string
-	KeyFile       string
-	KeyData       string
-	Host          string
-	Logger        Logger
+	// KeyID is the Intersight API Key ID
+	// If unset, the value of IS_KEYID environment variable will be used.
+	KeyID string
+
+	// KeyFile is the path to a file containing the Intersight API Key.
+	// This cannot be set at the same time as KeyData.
+	// If unset, the value of IS_KEYFILE environment variable will be used.
+	KeyFile string
+
+	// KeyData is the Intersight API key. This cannot be set at the same time as KeyFile.
+	KeyData string
+
+	// Host is the Intersight instance host name. Default "intersight.com"
+	Host string
+
+	// Logger is a logger object to send log messages to
+	Logger Logger
+
+	// BaseTransport is a http.RoundTripper for this client to use. If unset http.DefaultTransport will be used.
 	BaseTransport http.RoundTripper
 }
 
+// Client handles communication with the Intersight API.
+// It holds credentials (API keys) and handles authentication for a single Intersight account.
 type Client struct {
 	keyID   string
 	keyData []byte
@@ -38,6 +52,11 @@ type Client struct {
 
 var signedHeaders = []string{httpsig.RequestTarget, "date", "host", "content-type", "digest"}
 
+// NewClient creates a new Client object.
+// If called with no parameters, it will default to the Intersight SaaS instance and
+// attempt to find the Key ID and Key File from the IS_KEYID and IS_KEYFILE
+// environment variables. Alternatively, it can be passed a Config object to explicitly
+// set the key details and other options.
 func NewClient(configs ...Config) (*Client, error) {
 	client := &Client{}
 	var config Config
@@ -152,22 +171,32 @@ func NewClient(configs ...Config) (*Client, error) {
 	return client, nil
 }
 
+// Get will send a GET request to the Intersight API. The response will be JSON decoded automatically.
+// Get will return an error if the HTTP request fails, if the API response code is not 2xx or if JSON decoding fails.
 func (c *Client) Get(path string) (any, error) {
 	return c.Call(http.MethodGet, path, []byte(""))
 }
 
+// Post will send a POST request to the Intersight API. The response will be JSON decoded automatically.
+// Post will return an error if the HTTP request fails, if the API response code is not 2xx or if JSON decoding fails.
 func (c *Client) Post(path string, body []byte) (any, error) {
 	return c.Call(http.MethodPost, path, body)
 }
 
+// Patch will send a POST request to the Intersight API. The response will be JSON decoded automatically.
+// Patch will return an error if the HTTP request fails, if the API response code is not 2xx or if JSON decoding fails.
 func (c *Client) Patch(path string, body []byte) (any, error) {
 	return c.Call(http.MethodPatch, path, body)
 }
 
+// Delete will send a DELETE request to the Intersight API. The response will be JSON decoded automatically.
+// Delete will return an error if the HTTP request fails or if the API response code is not 2xx.
 func (c *Client) Delete(path string) (any, error) {
 	return c.Call(http.MethodDelete, path, []byte(""))
 }
 
+// Call will send a request to the Intersight API. The response will be JSON decoded automatically.
+// Get will return an error if the HTTP request fails, if the API response code is not 2xx or if JSON decoding fails.
 func (c *Client) Call(method, path string, body []byte) (any, error) {
 	req, err := http.NewRequest(method, fmt.Sprintf("https://%s%s", c.host, path), bytes.NewReader(body))
 	if err != nil {
@@ -247,4 +276,9 @@ func (t *signTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		t.log.Printf("signTransport: err: %v", err)
 	}
 	return res, err
+}
+
+// Logger is an interface that can receive log messages.
+type Logger interface {
+	Printf(format string, v ...any)
 }
