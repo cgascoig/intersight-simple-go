@@ -10,7 +10,13 @@ This module provides a simple to use client for the Intersight API.
 - Simple to use
 - Automatic configuration using environment variables
 
-## Example
+## Installation
+```
+go get github.com/cgascoig/intersight-simple-go
+```
+
+## Usage
+Below is a simple example Go program that shows how to use this module
 
 ```
 package main
