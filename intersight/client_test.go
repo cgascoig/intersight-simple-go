@@ -2,6 +2,7 @@ package intersight
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -188,4 +189,26 @@ func TestGet(t *testing.T) {
 		"aa": "AA",
 		"bb": "BB",
 	}, res)
+}
+
+func TestErrorResponse(t *testing.T) {
+	client, err := NewClient(Config{
+		KeyID:   v2_key_id,
+		KeyData: v2_secret_key,
+		BaseTransport: RoundTripFunc(func(req *http.Request) *http.Response {
+
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Status:     "400 Bad Request",
+				Body:       io.NopCloser(strings.NewReader(`{"code":"InvalidRequest","message":"Cannot set the property 'policy.AbstractPolicy.Name'. The property cannot be empty.","messageId":"barcelona_request_cannot_access_property_required","messageParams":{"1":"policy.AbstractPolicy","2":"Name"},"traceId":"STD4v5iGb_OWgyZoHSN7WdY6iSAa2lBfnScGBWhYvOr8bnZw7y_iQQ=="}`)),
+			}
+		}),
+	})
+
+	assert.NoError(t, err)
+
+	res, err := client.Get("/api/v1/ntp/Policies")
+	assert.Error(t, err)
+	assert.Equal(t, fmt.Errorf("request failed: 400 Bad Request: Cannot set the property 'policy.AbstractPolicy.Name'. The property cannot be empty."), err)
+	assert.Nil(t, res)
 }
