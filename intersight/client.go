@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-fed/httpsig"
+	"github.com/icza/dyno"
 )
 
 // Config holds configuration options for creating a new Client.
@@ -209,9 +210,18 @@ func (c *Client) Call(method, path string, body []byte) (any, error) {
 		return nil, fmt.Errorf("unable to send Intersight request: %v", err)
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("request failed: %d %s", res.StatusCode, res.Status)
+		if body, err := readBody(res); err == nil {
+			if message, err := dyno.GetString(body, "message"); err == nil {
+				return nil, fmt.Errorf("request failed: %s: %s", res.Status, message)
+			}
+		}
+		return nil, fmt.Errorf("request failed: %s", res.Status)
 	}
 
+	return readBody(res)
+}
+
+func readBody(res *http.Response) (any, error) {
 	var ret any
 	resBytes, err := io.ReadAll(res.Body)
 	if err != nil {

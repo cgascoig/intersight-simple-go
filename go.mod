@@ -5,7 +5,7 @@ go 1.18
 require (
 	github.com/go-fed/httpsig v1.1.0
 	github.com/gruntwork-io/terratest v0.41.10
-	github.com/icza/dyno v0.0.0-20220812133438-f0b6f8a18845
+	github.com/icza/dyno v0.0.0-20230330125955-09f820a8d9c0
 	github.com/stretchr/testify v1.7.0
 )
 
