@@ -12,6 +12,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/go-fed/httpsig"
@@ -52,6 +54,14 @@ type Config struct {
 
 	// BaseTransport is a http.RoundTripper for this client to use. If unset http.DefaultTransport will be used.
 	BaseTransport http.RoundTripper
+
+	// TokenCachePath is the path to store cached OAuth tokens.
+	// If empty, tokens will not be cached between invocations.
+	TokenCachePath string
+
+	// DisableTokenCache disables token caching even if TokenCachePath is set.
+	// Useful for CI environments.
+	DisableTokenCache bool
 }
 
 // Client handles communication with the Intersight API.
@@ -217,13 +227,19 @@ func NewClient(configs ...Config) (*Client, error) {
 		// By default oauth2 uses http.DefaultClient, we need to tell it to use our transport
 		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{Transport: baseTransport})
 
-		// ccConfig.Client(ctx) returns a client that handles token refresh.
-		// The specialized transport inside that client uses the oauth2.HTTPClient (from context) for token operations.
-		// For the actual API operations, it wraps the transport of the context client?
-		// Actually, oauth2.Client(ctx) returns a client where:
-		// "The returned client and its Transport should not be modified."
-		// "The Transport's underlying RoundTripper will be the one stored in the context, or http.DefaultTransport."
-		client.client = ccConfig.Client(ctx)
+		// Create the base token source from client credentials config
+		baseTokenSource := ccConfig.TokenSource(ctx)
+
+		// Wrap with persistent token source if caching is enabled
+		var tokenSource oauth2.TokenSource
+		if config.TokenCachePath != "" && !config.DisableTokenCache {
+			tokenSource = newPersistentTokenSource(config.TokenCachePath, baseTokenSource)
+		} else {
+			tokenSource = baseTokenSource
+		}
+
+		// Create client with the token source
+		client.client = oauth2.NewClient(ctx, tokenSource)
 	} else {
 		return nil, fmt.Errorf("invalid Intersight client configuration: either KeyID with KeyFile/KeyData or ClientID with ClientSecret is required")
 	}
@@ -376,4 +392,84 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		t.log.Printf("err: %v", err)
 	}
 	return res, err
+}
+
+// persistentTokenSource wraps an oauth2.TokenSource and persists tokens to disk.
+// It loads cached tokens on Token() calls and saves new tokens when they're refreshed.
+type persistentTokenSource struct {
+	cachePath  string
+	underlying oauth2.TokenSource
+	mu         sync.Mutex
+	cached     *oauth2.Token
+}
+
+// newPersistentTokenSource creates a new persistentTokenSource that caches tokens at the given path.
+func newPersistentTokenSource(cachePath string, underlying oauth2.TokenSource) oauth2.TokenSource {
+	pts := &persistentTokenSource{
+		cachePath:  cachePath,
+		underlying: underlying,
+	}
+	// Try to load existing cached token
+	pts.cached = pts.loadTokenFromCache()
+	return pts
+}
+
+// Token returns a valid token, loading from cache or fetching a new one as needed.
+func (pts *persistentTokenSource) Token() (*oauth2.Token, error) {
+	pts.mu.Lock()
+	defer pts.mu.Unlock()
+
+	// Check if cached token is still valid
+	if pts.cached != nil && pts.cached.Valid() {
+		return pts.cached, nil
+	}
+
+	// Fetch new token from underlying source
+	token, err := pts.underlying.Token()
+	if err != nil {
+		return nil, err
+	}
+
+	// Save the new token to cache
+	pts.cached = token
+	pts.saveTokenToCache(token)
+
+	return token, nil
+}
+
+// loadTokenFromCache reads a cached token from disk.
+func (pts *persistentTokenSource) loadTokenFromCache() *oauth2.Token {
+	data, err := os.ReadFile(pts.cachePath)
+	if err != nil {
+		return nil
+	}
+
+	var token oauth2.Token
+	if err := json.Unmarshal(data, &token); err != nil {
+		return nil
+	}
+
+	// Return nil if token is expired
+	if !token.Valid() {
+		return nil
+	}
+
+	return &token
+}
+
+// saveTokenToCache writes a token to disk as JSON.
+func (pts *persistentTokenSource) saveTokenToCache(token *oauth2.Token) error {
+	// Ensure the directory exists
+	dir := filepath.Dir(pts.cachePath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(token)
+	if err != nil {
+		return err
+	}
+
+	// Write with restrictive permissions (owner read/write only)
+	return os.WriteFile(pts.cachePath, data, 0600)
 }

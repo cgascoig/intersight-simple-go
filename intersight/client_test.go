@@ -2,14 +2,19 @@ package intersight
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/oauth2"
 )
 
 const (
@@ -326,4 +331,303 @@ func TestOAuth2Logging(t *testing.T) {
 	}
 	assert.True(t, foundReq, "Expected request log")
 	assert.True(t, foundRes, "Expected response log")
+}
+
+// mockTokenSource is a test token source that tracks Token() calls
+type mockTokenSource struct {
+	token      *oauth2.Token
+	callCount  int
+	shouldFail bool
+}
+
+func (m *mockTokenSource) Token() (*oauth2.Token, error) {
+	m.callCount++
+	if m.shouldFail {
+		return nil, fmt.Errorf("token fetch failed")
+	}
+	return m.token, nil
+}
+
+func TestPersistentTokenSource_LoadsCachedToken(t *testing.T) {
+	// Create a temp directory for the cache
+	tmpDir := t.TempDir()
+	cachePath := filepath.Join(tmpDir, "token-cache.json")
+
+	// Create a valid cached token
+	cachedToken := &oauth2.Token{
+		AccessToken: "cached_access_token",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(1 * time.Hour),
+	}
+	tokenData, _ := json.Marshal(cachedToken)
+	err := os.WriteFile(cachePath, tokenData, 0600)
+	assert.NoError(t, err)
+
+	// Create a mock underlying source that should NOT be called
+	mockSource := &mockTokenSource{
+		token: &oauth2.Token{
+			AccessToken: "new_access_token",
+			TokenType:   "Bearer",
+			Expiry:      time.Now().Add(1 * time.Hour),
+		},
+	}
+
+	// Create the persistent token source
+	pts := newPersistentTokenSource(cachePath, mockSource)
+
+	// Get token - should return cached token
+	token, err := pts.Token()
+	assert.NoError(t, err)
+	assert.Equal(t, "cached_access_token", token.AccessToken)
+	assert.Equal(t, 0, mockSource.callCount, "Underlying source should not have been called")
+}
+
+func TestPersistentTokenSource_FetchesNewTokenWhenCacheExpired(t *testing.T) {
+	// Create a temp directory for the cache
+	tmpDir := t.TempDir()
+	cachePath := filepath.Join(tmpDir, "token-cache.json")
+
+	// Create an expired cached token
+	expiredToken := &oauth2.Token{
+		AccessToken: "expired_access_token",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(-1 * time.Hour), // Already expired
+	}
+	tokenData, _ := json.Marshal(expiredToken)
+	err := os.WriteFile(cachePath, tokenData, 0600)
+	assert.NoError(t, err)
+
+	// Create a mock underlying source
+	mockSource := &mockTokenSource{
+		token: &oauth2.Token{
+			AccessToken: "new_access_token",
+			TokenType:   "Bearer",
+			Expiry:      time.Now().Add(1 * time.Hour),
+		},
+	}
+
+	// Create the persistent token source
+	pts := newPersistentTokenSource(cachePath, mockSource)
+
+	// Get token - should fetch new token
+	token, err := pts.Token()
+	assert.NoError(t, err)
+	assert.Equal(t, "new_access_token", token.AccessToken)
+	assert.Equal(t, 1, mockSource.callCount, "Underlying source should have been called once")
+}
+
+func TestPersistentTokenSource_FetchesNewTokenWhenNoCacheExists(t *testing.T) {
+	// Create a temp directory for the cache (file doesn't exist)
+	tmpDir := t.TempDir()
+	cachePath := filepath.Join(tmpDir, "token-cache.json")
+
+	// Create a mock underlying source
+	mockSource := &mockTokenSource{
+		token: &oauth2.Token{
+			AccessToken: "new_access_token",
+			TokenType:   "Bearer",
+			Expiry:      time.Now().Add(1 * time.Hour),
+		},
+	}
+
+	// Create the persistent token source
+	pts := newPersistentTokenSource(cachePath, mockSource)
+
+	// Get token - should fetch new token
+	token, err := pts.Token()
+	assert.NoError(t, err)
+	assert.Equal(t, "new_access_token", token.AccessToken)
+	assert.Equal(t, 1, mockSource.callCount, "Underlying source should have been called once")
+
+	// Verify token was saved to cache
+	savedData, err := os.ReadFile(cachePath)
+	assert.NoError(t, err)
+	var savedToken oauth2.Token
+	err = json.Unmarshal(savedData, &savedToken)
+	assert.NoError(t, err)
+	assert.Equal(t, "new_access_token", savedToken.AccessToken)
+}
+
+func TestPersistentTokenSource_SavesTokenWithCorrectPermissions(t *testing.T) {
+	// Create a temp directory for the cache
+	tmpDir := t.TempDir()
+	cachePath := filepath.Join(tmpDir, "subdir", "token-cache.json")
+
+	// Create a mock underlying source
+	mockSource := &mockTokenSource{
+		token: &oauth2.Token{
+			AccessToken: "new_access_token",
+			TokenType:   "Bearer",
+			Expiry:      time.Now().Add(1 * time.Hour),
+		},
+	}
+
+	// Create the persistent token source
+	pts := newPersistentTokenSource(cachePath, mockSource)
+
+	// Get token - should fetch and save
+	_, err := pts.Token()
+	assert.NoError(t, err)
+
+	// Verify file was created with correct permissions
+	info, err := os.Stat(cachePath)
+	assert.NoError(t, err)
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm(), "Token cache should have 0600 permissions")
+}
+
+func TestPersistentTokenSource_PropagatesUnderlyingErrors(t *testing.T) {
+	// Create a temp directory for the cache
+	tmpDir := t.TempDir()
+	cachePath := filepath.Join(tmpDir, "token-cache.json")
+
+	// Create a mock underlying source that fails
+	mockSource := &mockTokenSource{
+		shouldFail: true,
+	}
+
+	// Create the persistent token source
+	pts := newPersistentTokenSource(cachePath, mockSource)
+
+	// Get token - should propagate error
+	_, err := pts.Token()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "token fetch failed")
+}
+
+func TestPersistentTokenSource_CachesAfterFirstFetch(t *testing.T) {
+	// Create a temp directory for the cache
+	tmpDir := t.TempDir()
+	cachePath := filepath.Join(tmpDir, "token-cache.json")
+
+	// Create a mock underlying source
+	mockSource := &mockTokenSource{
+		token: &oauth2.Token{
+			AccessToken: "new_access_token",
+			TokenType:   "Bearer",
+			Expiry:      time.Now().Add(1 * time.Hour),
+		},
+	}
+
+	// Create the persistent token source
+	pts := newPersistentTokenSource(cachePath, mockSource)
+
+	// First call - should fetch from underlying source
+	token1, err := pts.Token()
+	assert.NoError(t, err)
+	assert.Equal(t, 1, mockSource.callCount)
+
+	// Second call - should use in-memory cache
+	token2, err := pts.Token()
+	assert.NoError(t, err)
+	assert.Equal(t, 1, mockSource.callCount, "Should not call underlying source again")
+	assert.Equal(t, token1.AccessToken, token2.AccessToken)
+}
+
+func TestNewClient_DisableTokenCache(t *testing.T) {
+	// Create a temp directory for the cache
+	tmpDir := t.TempDir()
+	cachePath := filepath.Join(tmpDir, "token-cache.json")
+
+	// Create a valid cached token
+	cachedToken := &oauth2.Token{
+		AccessToken: "cached_access_token",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(1 * time.Hour),
+	}
+	tokenData, _ := json.Marshal(cachedToken)
+	err := os.WriteFile(cachePath, tokenData, 0600)
+	assert.NoError(t, err)
+
+	tokenFetchCount := 0
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/iam/token" {
+			tokenFetchCount++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"access_token":"server_token","token_type":"Bearer","expires_in":3600}`))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	host := strings.TrimPrefix(server.URL, "https://")
+	client, err := NewClient(Config{
+		ClientID:          "test_client_id",
+		ClientSecret:      "test_client_secret",
+		Host:              host,
+		TokenURL:          server.URL + "/iam/token",
+		TokenCachePath:    cachePath,
+		DisableTokenCache: true,
+		BaseTransport:     server.Client().Transport,
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, client)
+
+	// The token source should be called since caching is disabled
+	// We can't easily test this without making a request, but we verified
+	// the client was created successfully with DisableTokenCache=true
+}
+
+func TestNewClient_TokenCacheIntegration(t *testing.T) {
+	// Create a temp directory for the cache
+	tmpDir := t.TempDir()
+	cachePath := filepath.Join(tmpDir, "token-cache.json")
+
+	tokenFetchCount := 0
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/iam/token" {
+			tokenFetchCount++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"access_token":"mock_token","token_type":"Bearer","expires_in":3600}`))
+		} else if r.URL.Path == "/api/v1/test" {
+			assert.Equal(t, "Bearer mock_token", r.Header.Get("Authorization"))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"status": "ok"}`))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	host := strings.TrimPrefix(server.URL, "https://")
+
+	// First client - should fetch and cache token
+	client1, err := NewClient(Config{
+		ClientID:       "test_client_id",
+		ClientSecret:   "test_client_secret",
+		Host:           host,
+		TokenURL:       server.URL + "/iam/token",
+		TokenCachePath: cachePath,
+		BaseTransport:  server.Client().Transport,
+	})
+	assert.NoError(t, err)
+
+	_, err = client1.Get("/api/v1/test")
+	assert.NoError(t, err)
+	assert.Equal(t, 1, tokenFetchCount, "First request should fetch token")
+
+	// Verify token was cached
+	_, err = os.Stat(cachePath)
+	assert.NoError(t, err, "Token cache file should exist")
+
+	// Second client - should use cached token
+	client2, err := NewClient(Config{
+		ClientID:       "test_client_id",
+		ClientSecret:   "test_client_secret",
+		Host:           host,
+		TokenURL:       server.URL + "/iam/token",
+		TokenCachePath: cachePath,
+		BaseTransport:  server.Client().Transport,
+	})
+	assert.NoError(t, err)
+
+	_, err = client2.Get("/api/v1/test")
+	assert.NoError(t, err)
+	assert.Equal(t, 1, tokenFetchCount, "Second client should use cached token")
 }
