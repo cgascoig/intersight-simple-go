@@ -2,6 +2,7 @@ package intersight
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/x509"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/go-fed/httpsig"
 	"github.com/icza/dyno"
+	"golang.org/x/oauth2"
+	cc "golang.org/x/oauth2/clientcredentials"
 )
 
 // Config holds configuration options for creating a new Client.
@@ -31,6 +34,15 @@ type Config struct {
 
 	// KeyData is the Intersight API key. This cannot be set at the same time as KeyFile.
 	KeyData string
+
+	// ClientID is the Intersight OAuth2 Client ID. Only one set of ClientID/ClientSecret and KeyID/KeyFile/KeyData should be used at a time
+	ClientID string
+
+	// ClientSecret is the Intersight OAuth2 Client ID. Only one set of ClientID/ClientSecret and KeyID/KeyFile/KeyData should be used at a time
+	ClientSecret string
+
+	// TokenURL is the OAuth2 token URL. Default is "https://{Host}/iam/token"
+	TokenURL string
 
 	// Host is the Intersight instance host name. Default "intersight.com"
 	Host string
@@ -90,86 +102,134 @@ func NewClient(configs ...Config) (*Client, error) {
 		}
 	}
 
+	if config.ClientID == "" {
+		envClientID := os.Getenv("INTERSIGHT_CLIENT_ID")
+		if envClientID != "" {
+			config.ClientID = envClientID
+		}
+	}
+
+	if config.ClientSecret == "" {
+		envClientSecret := os.Getenv("INTERSIGHT_CLIENT_SECRET")
+		if envClientSecret != "" {
+			config.ClientSecret = envClientSecret
+		}
+	}
+
 	//Create client from config
 	client.host = config.Host
-
-	if config.KeyID == "" {
-		return nil, fmt.Errorf("KeyID must be set")
-	} else {
-		client.keyID = config.KeyID
-	}
-
-	if config.KeyFile != "" && config.KeyData != "" {
-		return nil, fmt.Errorf("both KeyFile and KeyData cannot be set")
-	}
-
-	if config.KeyFile != "" {
-		keyData, err := os.ReadFile(config.KeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("error loading key from file: %v", err)
-		}
-		client.keyData = keyData
-	}
-
-	if config.KeyData != "" {
-		client.keyData = []byte(config.KeyData)
-	}
 
 	var baseTransport = http.DefaultTransport
 	if config.BaseTransport != nil {
 		baseTransport = config.BaseTransport
 	}
 
-	var transport http.RoundTripper
-	decodedKeyData, _ := pem.Decode(client.keyData)
-	if decodedKeyData == nil {
-		return nil, fmt.Errorf("invalid key - unable to decode PEM data")
-	}
-	if decodedKeyData.Type == "RSA PRIVATE KEY" {
-		k, err := x509.ParsePKCS1PrivateKey(decodedKeyData.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("unable to parse key data as PKCS1 private key: %v", err)
+	if config.KeyID != "" && (config.KeyFile != "" || config.KeyData != "") {
+		// Use API Key
+		client.keyID = config.KeyID
+
+		if config.KeyFile != "" && config.KeyData != "" {
+			return nil, fmt.Errorf("both KeyFile and KeyData cannot be set")
 		}
 
-		signer, _, err := httpsig.NewSigner(
-			[]httpsig.Algorithm{httpsig.RSA_SHA256},
-			httpsig.DigestSha256,
-			signedHeaders,
-			httpsig.Authorization,
-			0,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("unable to create RSA_SHA256 signer: %v", err)
+		if config.KeyFile != "" {
+			keyData, err := os.ReadFile(config.KeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("error loading key from file: %v", err)
+			}
+			client.keyData = keyData
 		}
-		transport = newSignTransport(baseTransport, signer, client.keyID, k, config.Logger)
-	} else {
-		key, err := x509.ParsePKCS8PrivateKey(decodedKeyData.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("unable to parse key data as PKCS8 private key: %v", err)
+
+		if config.KeyData != "" {
+			client.keyData = []byte(config.KeyData)
 		}
-		switch k := key.(type) {
-		case *ecdsa.PrivateKey:
+
+		var transport http.RoundTripper
+		decodedKeyData, _ := pem.Decode(client.keyData)
+		if decodedKeyData == nil {
+			return nil, fmt.Errorf("invalid key - unable to decode PEM data")
+		}
+		if decodedKeyData.Type == "RSA PRIVATE KEY" {
+			k, err := x509.ParsePKCS1PrivateKey(decodedKeyData.Bytes)
+			if err != nil {
+				return nil, fmt.Errorf("unable to parse key data as PKCS1 private key: %v", err)
+			}
+
 			signer, _, err := httpsig.NewSigner(
-				[]httpsig.Algorithm{httpsig.ECDSA_SHA256},
+				[]httpsig.Algorithm{httpsig.RSA_SHA256},
 				httpsig.DigestSha256,
 				signedHeaders,
 				httpsig.Authorization,
 				0,
 			)
 			if err != nil {
-				return nil, fmt.Errorf("unable to create ECDSA_SHA256 signer: %v", err)
+				return nil, fmt.Errorf("unable to create RSA_SHA256 signer: %v", err)
 			}
 			transport = newSignTransport(baseTransport, signer, client.keyID, k, config.Logger)
-		default:
-			return nil, fmt.Errorf("key is in PKCS8 format but not ECDSA (v3)")
+		} else {
+			key, err := x509.ParsePKCS8PrivateKey(decodedKeyData.Bytes)
+			if err != nil {
+				return nil, fmt.Errorf("unable to parse key data as PKCS8 private key: %v", err)
+			}
+			switch k := key.(type) {
+			case *ecdsa.PrivateKey:
+				signer, _, err := httpsig.NewSigner(
+					[]httpsig.Algorithm{httpsig.ECDSA_SHA256},
+					httpsig.DigestSha256,
+					signedHeaders,
+					httpsig.Authorization,
+					0,
+				)
+				if err != nil {
+					return nil, fmt.Errorf("unable to create ECDSA_SHA256 signer: %v", err)
+				}
+				transport = newSignTransport(baseTransport, signer, client.keyID, k, config.Logger)
+			default:
+				return nil, fmt.Errorf("key is in PKCS8 format but not ECDSA (v3)")
+			}
 		}
-	}
 
-	client.client = &http.Client{
-		Transport: transport,
+		client.client = &http.Client{
+			Transport: transport,
+		}
+
+	} else if config.ClientID != "" && config.ClientSecret != "" {
+		// Use OAuth2
+		tokenURL := config.TokenURL
+		if tokenURL == "" {
+			tokenURL = fmt.Sprintf("https://%s/iam/token", client.host)
+		}
+		ccConfig := &cc.Config{
+			ClientID:     config.ClientID,
+			ClientSecret: config.ClientSecret,
+			Scopes:       []string{},
+			TokenURL:     tokenURL,
+		}
+
+		if config.Logger != nil {
+			baseTransport = &loggingTransport{
+				wrappedTransport: baseTransport,
+				log:              config.Logger,
+			}
+		}
+
+		// Create a client that uses the baseTransport (which might be logging) for token requests
+		// By default oauth2 uses http.DefaultClient, we need to tell it to use our transport
+		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{Transport: baseTransport})
+
+		// ccConfig.Client(ctx) returns a client that handles token refresh.
+		// The specialized transport inside that client uses the oauth2.HTTPClient (from context) for token operations.
+		// For the actual API operations, it wraps the transport of the context client?
+		// Actually, oauth2.Client(ctx) returns a client where:
+		// "The returned client and its Transport should not be modified."
+		// "The Transport's underlying RoundTripper will be the one stored in the context, or http.DefaultTransport."
+		client.client = ccConfig.Client(ctx)
+	} else {
+		return nil, fmt.Errorf("invalid Intersight client configuration: either KeyID with KeyFile/KeyData or ClientID with ClientSecret is required")
 	}
 
 	return client, nil
+
 }
 
 // Get will send a GET request to the Intersight API. The response will be JSON decoded automatically.
@@ -291,4 +351,29 @@ func (t *signTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // Logger is an interface that can receive log messages.
 type Logger interface {
 	Printf(format string, v ...any)
+}
+
+type loggingTransport struct {
+	wrappedTransport http.RoundTripper
+	log              Logger
+}
+
+func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.log != nil {
+		t.log.Printf("req: %v", req)
+		if req.Body != nil {
+			// We need to read the body to log it, but also put it back for the request
+			// This can be expensive for large bodies, but assuming this is debug logging
+			bodyBytes, _ := io.ReadAll(req.Body)
+			req.Body.Close() // close the original body
+			req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			t.log.Printf("body: %s", string(bodyBytes))
+		}
+	}
+	res, err := t.wrappedTransport.RoundTrip(req)
+	if t.log != nil {
+		t.log.Printf("res: %v", res)
+		t.log.Printf("err: %v", err)
+	}
+	return res, err
 }
