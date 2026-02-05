@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -83,6 +84,15 @@ func TestNewClient(t *testing.T) {
 	assert.Error(t, err)
 
 	assert.Nil(t, client)
+
+	// test OAuth2
+	client, err = NewClient(Config{
+		ClientID:     "123",
+		ClientSecret: "djskfeoi",
+	})
+	assert.NoError(t, err)
+
+	assert.NotNil(t, client)
 }
 
 type RoundTripFunc func(req *http.Request) *http.Response
@@ -211,4 +221,109 @@ func TestErrorResponse(t *testing.T) {
 	assert.Error(t, err)
 	assert.Equal(t, fmt.Errorf("request failed: 400 Bad Request: Cannot set the property 'policy.AbstractPolicy.Name'. The property cannot be empty."), err)
 	assert.Nil(t, res)
+}
+
+func TestOAuth2(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/iam/token" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"access_token":"mock_token","token_type":"Bearer","expires_in":3600}`))
+		} else if r.URL.Path == "/api/v1/ntp/Policies" {
+			assert.Equal(t, "Bearer mock_token", r.Header.Get("Authorization"))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"aa": "AA", "bb": "BB"}`))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	oldTransport := http.DefaultTransport
+	http.DefaultTransport = server.Client().Transport
+	defer func() { http.DefaultTransport = oldTransport }()
+
+	host := strings.TrimPrefix(server.URL, "https://")
+	client, err := NewClient(Config{
+		ClientID:     "test_client_id",
+		ClientSecret: "test_client_secret",
+		Host:         host,
+		TokenURL:     server.URL + "/iam/token",
+	})
+
+	assert.NoError(t, err)
+
+	res, err := client.Get("/api/v1/ntp/Policies")
+	assert.NoError(t, err)
+	assert.Equal(t, map[string]any{
+		"aa": "AA",
+		"bb": "BB",
+	}, res)
+}
+
+type MockLogger struct {
+	Captured []string
+}
+
+func (l *MockLogger) Printf(format string, v ...any) {
+	l.Captured = append(l.Captured, fmt.Sprintf(format, v...))
+}
+
+func TestOAuth2Logging(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/iam/token" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"access_token":"mock_token","token_type":"Bearer","expires_in":3600}`))
+		} else if r.URL.Path == "/api/v1/log-test" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"status": "ok"}`))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	mockLog := &MockLogger{}
+	host := strings.TrimPrefix(server.URL, "https://")
+
+	// Use a custom transport to avoid certificate errors with the test server
+	// and to ensure we can control the base transport if needed.
+	// NewClient will wrap this with loggingTransport.
+	baseTransport := server.Client().Transport
+
+	client, err := NewClient(Config{
+		ClientID:      "test_client_id",
+		ClientSecret:  "test_client_secret",
+		Host:          host,
+		TokenURL:      server.URL + "/iam/token",
+		Logger:        mockLog,
+		BaseTransport: baseTransport,
+	})
+
+	assert.NoError(t, err)
+
+	_, err = client.Get("/api/v1/log-test")
+	assert.NoError(t, err)
+
+	// Verify logs were captured
+	// We expect logs for the request and response of the API call.
+	// We might also see logs for the token fetch if that uses the same transport stack (which it should now)
+
+	assert.NotEmpty(t, mockLog.Captured, "Expected logs to be captured")
+
+	foundReq := false
+	foundRes := false
+	for _, logMsg := range mockLog.Captured {
+		if strings.Contains(logMsg, "req:") {
+			foundReq = true
+		}
+		if strings.Contains(logMsg, "res:") {
+			foundRes = true
+		}
+	}
+	assert.True(t, foundReq, "Expected request log")
+	assert.True(t, foundRes, "Expected response log")
 }

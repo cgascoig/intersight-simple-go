@@ -19,7 +19,7 @@ jobs:
       max-parallel: 4
       matrix:
         os: ["ubuntu-latest"]
-        go-version: ["1.18", "1.19", "1.20"]
+        go-version: ["1.24", "1.25", "1.26"]
     runs-on: ${{ matrix.os }}
     steps:
       #----------------------------------------------
@@ -48,4 +48,9 @@ jobs:
         env:
           IS_KEY_ID: ${{ secrets.IS_KEY_ID_V3 }}
           IS_KEY: ${{ secrets.IS_KEY_V3 }}
+        run: go run example/main.go
+      - name: Run tests with OAuth2
+        env:
+          INTERSIGHT_CLIENT_ID: ${{ secrets.INTERSIGHT_CLIENT_ID }}
+          INTERSIGHT_CLIENT_SECRET: ${{ secrets.INTERSIGHT_CLIENT_SECRET }}
         run: go run example/main.go
